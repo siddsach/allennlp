@@ -5,14 +5,13 @@ from overrides import overrides
 
 import torch
 from torch.autograd import Variable
-from torch.nn.modules.rnn import LSTMCell
 from torch.nn.modules.linear import Linear
 import torch.nn.functional as F
 
 from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.data.dataset_readers.seq2seq import START_SYMBOL, END_SYMBOL
-from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder
+from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder, Seq2SeqDecoder
 from allennlp.modules.similarity_functions import SimilarityFunction
 from allennlp.modules.token_embedders import Embedding
 from allennlp.models.model import Model
@@ -28,8 +27,8 @@ class SimpleSeq2Seq(Model):
     seq2seq problem.  The model here is simple, but should be a decent starting place for
     implementing recent models for these tasks.
 
-    This ``SimpleSeq2Seq`` model takes an encoder (:class:`Seq2SeqEncoder`) as an input, and
-    implements the functionality of the decoder.  In this implementation, the decoder uses the
+    This ``SimpleSeq2Seq`` model takes an encoder (:class:`Seq2SeqEncoder`) and decoder cell
+    (:class:`Seq2SeqDecoder`) as inputs. In this implementation, the decoder uses the
     encoder's outputs in two ways. The hidden state of the decoder is initialized with the output
     from the final time-step of the encoder, and when using attention, a weighted average of the
     outputs from the encoder is concatenated to the inputs of the decoder at every timestep.
@@ -44,6 +43,8 @@ class SimpleSeq2Seq(Model):
         Embedder for source side sequences
     encoder : ``Seq2SeqEncoder``, required
         The encoder of the "encoder/decoder" model
+    decoder : ``Seq2SeqDecoder``, required
+        The decoder cell of the "encoder/decoder" model
     max_decoding_steps : int, required
         Length of decoded sequences
     target_namespace : str, optional (default = 'tokens')
@@ -65,11 +66,21 @@ class SimpleSeq2Seq(Model):
         using target side ground truth labels.  See the following paper for more information:
         Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks. Bengio et al.,
         2015.
+    adaptive_softmax_cutoff: list, optional (default = None)
+        If the argument provided is a list, model uses adaptive softmax, a variant of hierarchical softmax,
+        in place of standard softmax when generating output probabilities for the decoder. For seq2seq, the computational
+        bottleneck is computing softmax over a large vocabulary. Adaptive Softmax gives 2x-10x
+        speedup over traditional softmax without significant reductions in accuracy by splitting the
+        vocabulary into clusters based on frequency to form a probabilistic hierarchy. This argument expects a list[int],
+        where the ith element of the list corresponds to the number of words in the ith cluster of the softmax approximation.
+        We recommend tuning this parameter according to your target vocabulary size and the configuration of your hardware.
+        See the following paper for more information: Efficient Softmax Approximation for GPUs. Grave et al., 2016.
     """
     def __init__(self,
                  vocab: Vocabulary,
                  source_embedder: TextFieldEmbedder,
                  encoder: Seq2SeqEncoder,
+                 decoder_cell: Seq2SeqDecoder,
                  max_decoding_steps: int,
                  target_namespace: str = "tokens",
                  target_embedding_dim: int = None,
@@ -82,17 +93,20 @@ class SimpleSeq2Seq(Model):
         self._target_namespace = target_namespace
         self._attention_function = attention_function
         self._scheduled_sampling_ratio = scheduled_sampling_ratio
+
         # We need the start symbol to provide as the input at the first timestep of decoding, and
         # end symbol as a way to indicate the end of the decoded sequence.
         self._start_index = self.vocab.get_token_index(START_SYMBOL, self._target_namespace)
         self._end_index = self.vocab.get_token_index(END_SYMBOL, self._target_namespace)
         num_classes = self.vocab.get_vocab_size(self._target_namespace)
+
         # Decoder output dim needs to be the same as the encoder output dim since we initialize the
         # hidden state of the decoder with that of the final hidden states of the encoder. Also, if
         # we're using attention with ``DotProductSimilarity``, this is needed.
         self._decoder_output_dim = self._encoder.get_output_dim()
         target_embedding_dim = target_embedding_dim or self._source_embedder.get_output_dim()
         self._target_embedder = Embedding(num_classes, target_embedding_dim)
+
         if self._attention_function:
             self._decoder_attention = Attention(self._attention_function)
             # The output of attention, a weighted average over encoder outputs, will be
@@ -100,8 +114,13 @@ class SimpleSeq2Seq(Model):
             self._decoder_input_dim = self._encoder.get_output_dim() + target_embedding_dim
         else:
             self._decoder_input_dim = target_embedding_dim
-        # TODO (pradeep): Do not hardcode decoder cell type.
-        self._decoder_cell = LSTMCell(self._decoder_input_dim, self._decoder_output_dim)
+
+        if adaptive_softmax_cutoff:
+            self._softmax = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
+            self._get_loss = F.softmax
+        else:
+            self._softmax = F.Softmax
+        self._decoder_cell = decoder_cell(self._decoder_input_dim, self._decoder_output_dim)
         self._output_projection_layer = Linear(self._decoder_output_dim, num_classes)
 
     @overrides
@@ -161,7 +180,10 @@ class SimpleSeq2Seq(Model):
             output_projections = self._output_projection_layer(decoder_hidden)
             # list of (batch_size, 1, num_classes)
             step_logits.append(output_projections.unsqueeze(1))
-            class_probabilities = F.softmax(output_projections, dim=-1)
+
+            #class_probabilities = F.softmax(output_projections, dim=-1)
+            class_probabilities = self.softmax(output_projections, dim =-1)
+
             _, predicted_classes = torch.max(class_probabilities, 1)
             step_probabilities.append(class_probabilities.unsqueeze(1))
             last_predictions = predicted_classes
