@@ -12,6 +12,7 @@ from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.data.dataset_readers.seq2seq import START_SYMBOL, END_SYMBOL
 from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder, Seq2SeqDecoder
+from allennlp.modules.adasoft import AdaptiveSoftmax, AdaptiveLoss
 from allennlp.modules.similarity_functions import SimilarityFunction
 from allennlp.modules.token_embedders import Embedding
 from allennlp.models.model import Model
@@ -117,7 +118,7 @@ class SimpleSeq2Seq(Model):
 
         if adaptive_softmax_cutoff:
             self._softmax = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
-            self._get_loss = F.softmax
+            self._get_loss = AdaptiveLoss(adaptive_softmax_cutoff)
         else:
             self._softmax = F.Softmax
         self._decoder_cell = decoder_cell(self._decoder_input_dim, self._decoder_output_dim)
