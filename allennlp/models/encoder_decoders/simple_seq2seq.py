@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 import numpy
 from overrides import overrides
@@ -12,7 +12,7 @@ from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.data.dataset_readers.seq2seq import START_SYMBOL, END_SYMBOL
 from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder, Seq2SeqDecoder
-from allennlp.modules.adasoft import AdaptiveSoftmax, AdaptiveLoss
+from allennlp.modules.adasoft import AdaptiveSoftmax
 from allennlp.modules.similarity_functions import SimilarityFunction
 from allennlp.modules.token_embedders import Embedding
 from allennlp.models.model import Model
@@ -44,8 +44,6 @@ class SimpleSeq2Seq(Model):
         Embedder for source side sequences
     encoder : ``Seq2SeqEncoder``, required
         The encoder of the "encoder/decoder" model
-    decoder : ``Seq2SeqDecoder``, required
-        The decoder cell of the "encoder/decoder" model
     max_decoding_steps : int, required
         Length of decoded sequences
     target_namespace : str, optional (default = 'tokens')
@@ -81,13 +79,12 @@ class SimpleSeq2Seq(Model):
                  vocab: Vocabulary,
                  source_embedder: TextFieldEmbedder,
                  encoder: Seq2SeqEncoder,
-                 decoder_cell: Seq2SeqDecoder,
                  max_decoding_steps: int,
                  target_namespace: str = "tokens",
                  target_embedding_dim: int = None,
                  attention_function: SimilarityFunction = None,
-                 scheduled_sampling_ratio: float = 0.0
-                 adaptive_softmax_cutoff: list[int] = []) -> None:
+                 scheduled_sampling_ratio: float = 0.0,
+                 adaptive_softmax_cutoff: List[int] = None) -> None:
         super(SimpleSeq2Seq, self).__init__(vocab)
         self._source_embedder = source_embedder
         self._encoder = encoder
@@ -117,15 +114,12 @@ class SimpleSeq2Seq(Model):
         else:
             self._decoder_input_dim = target_embedding_dim
 
-
-        if not adaptive_softmax_cutoff:
-            self._adaptive_softmax = False
-            self._softmax = F.Softmax
+        if adaptive_softmax_cutoff:
+            self.adasoft = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
         else:
-            self._adaptive_softmax = True
-            self._softmax = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
+            self.adasoft = None
 
-        self._decoder_cell = decoder_cell(self._decoder_input_dim, self._decoder_output_dim)
+        self._decoder_cell = torch.nn.LSTMCell(self._decoder_input_dim, self._decoder_output_dim)
         self._output_projection_layer = Linear(self._decoder_output_dim, num_classes)
 
     @overrides
@@ -186,12 +180,6 @@ class SimpleSeq2Seq(Model):
             # list of (batch_size, 1, num_classes)
             step_logits.append(output_projections.unsqueeze(1))
 
-            if self.adasoft:
-                #determine adasoft clusters to compute probabilities over
-                self.adasoft.set_target(targets[:, timestep])
-
-            class_probabilities = self._softmax(output_projections)
-
             _, predicted_classes = torch.max(class_probabilities, 1)
             step_probabilities.append(class_probabilities.unsqueeze(1))
             last_predictions = predicted_classes
@@ -200,14 +188,12 @@ class SimpleSeq2Seq(Model):
         # step_logits is a list containing tensors of shape (batch_size, 1, num_classes)
         # This is (batch_size, num_decoding_steps, num_classes)
         logits = torch.cat(step_logits, 1)
-        class_probabilities = torch.cat(step_probabilities, 1)
         all_predictions = torch.cat(step_predictions, 1)
         output_dict = {"logits": logits,
-                       "class_probabilities": class_probabilities,
                        "predictions": all_predictions}
         if target_tokens:
             target_mask = get_text_field_mask(target_tokens)
-            loss = self._get_loss(logits, targets, target_mask)
+            loss = self._get_loss(logits, targets, target_mask, self.adasoft)
             output_dict["loss"] = loss
             # TODO: Define metrics
         return output_dict
@@ -259,7 +245,8 @@ class SimpleSeq2Seq(Model):
     @staticmethod
     def _get_loss(logits: torch.LongTensor,
                   targets: torch.LongTensor,
-                  target_mask: torch.LongTensor) -> torch.LongTensor:
+                  target_mask: torch.LongTensor,
+                  adasoft: AdaptiveSoftmax = None) -> torch.LongTensor:
         """
         Takes logits (unnormalized outputs from the decoder) of size (batch_size,
         num_decoding_steps, num_classes), target indices of size (batch_size, num_decoding_steps+1)
@@ -286,7 +273,7 @@ class SimpleSeq2Seq(Model):
         relevant_targets = targets[:, 1:].contiguous()  # (batch_size, num_decoding_steps)
         relevant_mask = target_mask[:, 1:].contiguous()  # (batch_size, num_decoding_steps)
 
-        loss = sequence_cross_entropy_with_logits(logits, relevant_targets, relevant_mask)
+        loss = sequence_cross_entropy_with_logits(logits, relevant_targets, relevant_mask, adasoft = adasoft)
         return loss
 
     @overrides
