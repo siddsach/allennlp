@@ -86,7 +86,8 @@ class SimpleSeq2Seq(Model):
                  target_namespace: str = "tokens",
                  target_embedding_dim: int = None,
                  attention_function: SimilarityFunction = None,
-                 scheduled_sampling_ratio: float = 0.0) -> None:
+                 scheduled_sampling_ratio: float = 0.0
+                 adaptive_softmax_cutoff: list[int] = []) -> None:
         super(SimpleSeq2Seq, self).__init__(vocab)
         self._source_embedder = source_embedder
         self._encoder = encoder
@@ -116,11 +117,14 @@ class SimpleSeq2Seq(Model):
         else:
             self._decoder_input_dim = target_embedding_dim
 
-        if adaptive_softmax_cutoff:
-            self._softmax = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
-            self._get_loss = AdaptiveLoss(adaptive_softmax_cutoff)
-        else:
+
+        if not adaptive_softmax_cutoff:
+            self._adaptive_softmax = False
             self._softmax = F.Softmax
+        else:
+            self._adaptive_softmax = True
+            self._softmax = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
+
         self._decoder_cell = decoder_cell(self._decoder_input_dim, self._decoder_output_dim)
         self._output_projection_layer = Linear(self._decoder_output_dim, num_classes)
 
@@ -182,8 +186,11 @@ class SimpleSeq2Seq(Model):
             # list of (batch_size, 1, num_classes)
             step_logits.append(output_projections.unsqueeze(1))
 
-            #class_probabilities = F.softmax(output_projections, dim=-1)
-            class_probabilities = self.softmax(output_projections, dim =-1)
+            if self.adasoft:
+                #determine adasoft clusters to compute probabilities over
+                self.adasoft.set_target(targets[:, timestep])
+
+            class_probabilities = self._softmax(output_projections)
 
             _, predicted_classes = torch.max(class_probabilities, 1)
             step_probabilities.append(class_probabilities.unsqueeze(1))
@@ -278,6 +285,7 @@ class SimpleSeq2Seq(Model):
         """
         relevant_targets = targets[:, 1:].contiguous()  # (batch_size, num_decoding_steps)
         relevant_mask = target_mask[:, 1:].contiguous()  # (batch_size, num_decoding_steps)
+
         loss = sequence_cross_entropy_with_logits(logits, relevant_targets, relevant_mask)
         return loss
 
