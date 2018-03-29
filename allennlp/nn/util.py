@@ -506,20 +506,21 @@ def sequence_cross_entropy_with_logits(logits: torch.FloatTensor,
 
     """
 
-    adasoft.set_target(targets)
+    # shape : (batch * max_len, 1)
+    targets_flat = targets.view(-1, 1).long()
 
     # shape : (batch * sequence_length, num_classes)
     logits_flat = logits.view(-1, logits.size(-1))
+
+    adasoft.set_target(targets)
     # shape : (batch * sequence_length, num_classes)
     log_probs_flat = adasoft(logits_flat)
-    # shape : (batch * max_len, 1)
-    targets_flat = targets.view(-1, 1).long()
 
     # Contribution to the negative log likelihood only comes from the exact indices
     # of the targets, as the target distributions are one-hot. Here we use torch.gather
     # to extract the indices of the num_classes dimension which contribute to the loss.
     # shape : (batch * sequence_length, 1)
-    negative_log_likelihood_flat = - torch.gather(log_probs_flat, dim=1, index=targets_flat)
+    negative_log_likelihood_flat = adasoft.compute_loss(log_probs_flat, targets_flat)
     # shape : (batch, sequence_length)
     negative_log_likelihood = negative_log_likelihood_flat.view(*targets.size())
     # shape : (batch, sequence_length)
