@@ -13,13 +13,10 @@
       }
     },
     "encoder": {
-        "type":"stacked_self_attention"
-        "input_dim": 200,
-        "hidden_dim": 200,
-        "projection_dim": 200,
-        "feedforward_hidden_dim": 200,
-        "num_layers": 2,
-        "num_attention_heads": 2
+        "type":"lstm"
+        "input_size": 200,
+        "hidden_size": 200,
+        "num_layers": 2
     },
     "max_decoding_steps":100, 
     "scheduled_sampling_ratio":0.0

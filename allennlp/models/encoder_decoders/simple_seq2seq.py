@@ -6,12 +6,13 @@ from overrides import overrides
 import torch
 from torch.autograd import Variable
 from torch.nn.modules.linear import Linear
-import torch.nn.functional as F
 
 from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.data.dataset_readers.seq2seq import START_SYMBOL, END_SYMBOL
-from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder, Seq2SeqDecoder
+print('here')
+from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder
+print('y u here')
 from allennlp.modules.adasoft import AdaptiveSoftmax
 from allennlp.modules.similarity_functions import SimilarityFunction
 from allennlp.modules.token_embedders import Embedding
@@ -158,7 +159,6 @@ class SimpleSeq2Seq(Model):
                                    .resize_(batch_size, self._decoder_output_dim).fill_(0))
         last_predictions = None
         step_logits = []
-        step_probabilities = []
         step_predictions = []
         for timestep in range(num_decoding_steps):
             if self.training and all(torch.rand(1) >= self._scheduled_sampling_ratio):
@@ -180,8 +180,7 @@ class SimpleSeq2Seq(Model):
             # list of (batch_size, 1, num_classes)
             step_logits.append(output_projections.unsqueeze(1))
 
-            _, predicted_classes = torch.max(class_probabilities, 1)
-            step_probabilities.append(class_probabilities.unsqueeze(1))
+            _, predicted_classes = torch.max(output_projections, 1)
             last_predictions = predicted_classes
             # (batch_size, 1)
             step_predictions.append(last_predictions.unsqueeze(1))
