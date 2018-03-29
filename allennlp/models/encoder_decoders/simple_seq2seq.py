@@ -11,8 +11,7 @@ import torch.nn.functional as F
 from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.data.dataset_readers.seq2seq import START_SYMBOL, END_SYMBOL
-from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder, Seq2SeqDecoder
-from allennlp.modules.adasoft import AdaptiveSoftmax, AdaptiveLoss
+from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder
 from allennlp.modules.similarity_functions import SimilarityFunction
 from allennlp.modules.token_embedders import Embedding
 from allennlp.models.model import Model
@@ -44,8 +43,6 @@ class SimpleSeq2Seq(Model):
         Embedder for source side sequences
     encoder : ``Seq2SeqEncoder``, required
         The encoder of the "encoder/decoder" model
-    decoder : ``Seq2SeqDecoder``, required
-        The decoder cell of the "encoder/decoder" model
     max_decoding_steps : int, required
         Length of decoded sequences
     target_namespace : str, optional (default = 'tokens')
@@ -67,21 +64,11 @@ class SimpleSeq2Seq(Model):
         using target side ground truth labels.  See the following paper for more information:
         Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks. Bengio et al.,
         2015.
-    adaptive_softmax_cutoff: list, optional (default = None)
-        If the argument provided is a list, model uses adaptive softmax, a variant of hierarchical softmax,
-        in place of standard softmax when generating output probabilities for the decoder. For seq2seq, the computational
-        bottleneck is computing softmax over a large vocabulary. Adaptive Softmax gives 2x-10x
-        speedup over traditional softmax without significant reductions in accuracy by splitting the
-        vocabulary into clusters based on frequency to form a probabilistic hierarchy. This argument expects a list[int],
-        where the ith element of the list corresponds to the number of words in the ith cluster of the softmax approximation.
-        We recommend tuning this parameter according to your target vocabulary size and the configuration of your hardware.
-        See the following paper for more information: Efficient Softmax Approximation for GPUs. Grave et al., 2016.
     """
     def __init__(self,
                  vocab: Vocabulary,
                  source_embedder: TextFieldEmbedder,
                  encoder: Seq2SeqEncoder,
-                 decoder_cell: Seq2SeqDecoder,
                  max_decoding_steps: int,
                  target_namespace: str = "tokens",
                  target_embedding_dim: int = None,
@@ -116,12 +103,7 @@ class SimpleSeq2Seq(Model):
         else:
             self._decoder_input_dim = target_embedding_dim
 
-        if adaptive_softmax_cutoff:
-            self._softmax = AdaptiveSoftmax(num_classes, adaptive_softmax_cutoff)
-            self._get_loss = AdaptiveLoss(adaptive_softmax_cutoff)
-        else:
-            self._softmax = F.Softmax
-        self._decoder_cell = decoder_cell(self._decoder_input_dim, self._decoder_output_dim)
+        self._decoder_cell = torch.nn.LSTMCell(self._decoder_input_dim, self._decoder_output_dim)
         self._output_projection_layer = Linear(self._decoder_output_dim, num_classes)
 
     @overrides
@@ -141,12 +123,6 @@ class SimpleSeq2Seq(Model):
            Output of ``Textfield.as_array()`` applied on target ``TextField``. We assume that the
            target tokens are also represented as a ``TextField``.
         """
-        # (batch_size, input_sequence_length, encoder_output_dim)
-        embedded_input = self._source_embedder(source_tokens)
-        batch_size, _, _ = embedded_input.size()
-        source_mask = get_text_field_mask(source_tokens)
-        encoder_outputs = self._encoder(embedded_input, source_mask)
-        final_encoder_output = encoder_outputs[:, -1]  # (batch_size, encoder_output_dim)
         if target_tokens:
             targets = target_tokens["tokens"]
             target_sequence_length = targets.size()[1]
@@ -155,7 +131,14 @@ class SimpleSeq2Seq(Model):
             num_decoding_steps = target_sequence_length - 1
         else:
             num_decoding_steps = self._max_decoding_steps
-        decoder_hidden = final_encoder_output
+
+        source_mask = get_text_field_mask(source_tokens)
+
+        encoded_input = self._encode(source_tokens, source_mask)
+        encoder_outputs = encoded_input["encoder_outputs"]
+
+        decoder_hidden = encoded_input["final_encoder_output"]
+        batch_size = decoder_hidden.size(0)
         decoder_context = Variable(encoder_outputs.data.new()
                                    .resize_(batch_size, self._decoder_output_dim).fill_(0))
         last_predictions = None
@@ -173,23 +156,16 @@ class SimpleSeq2Seq(Model):
                                              .resize_(batch_size).fill_(self._start_index))
                 else:
                     input_choices = last_predictions
-            decoder_input = self._prepare_decode_step_input(input_choices, decoder_hidden,
-                                                            encoder_outputs, source_mask)
-            decoder_hidden, decoder_context = self._decoder_cell(decoder_input,
-                                                                 (decoder_hidden, decoder_context))
-            # (batch_size, num_classes)
-            output_projections = self._output_projection_layer(decoder_hidden)
+
+            decoded = self._decode_step(input_choices, decoder_hidden, decoder_context, encoder_outputs, source_mask)
+
             # list of (batch_size, 1, num_classes)
-            step_logits.append(output_projections.unsqueeze(1))
-
-            #class_probabilities = F.softmax(output_projections, dim=-1)
-            class_probabilities = self.softmax(output_projections, dim =-1)
-
-            _, predicted_classes = torch.max(class_probabilities, 1)
-            step_probabilities.append(class_probabilities.unsqueeze(1))
-            last_predictions = predicted_classes
+            step_logits.append(decoded["output_projections"].unsqueeze(1))
+            step_probabilities.append(decoded["class_probabilities"].unsqueeze(1))
+            last_predictions = decoded["predicted_classes"]
             # (batch_size, 1)
             step_predictions.append(last_predictions.unsqueeze(1))
+
         # step_logits is a list containing tensors of shape (batch_size, 1, num_classes)
         # This is (batch_size, num_decoding_steps, num_classes)
         logits = torch.cat(step_logits, 1)
@@ -204,6 +180,38 @@ class SimpleSeq2Seq(Model):
             output_dict["loss"] = loss
             # TODO: Define metrics
         return output_dict
+
+    def _encode(self, source_tokens: Dict[str, torch.LongTensor],
+                      source_mask: torch.LongTensor) -> Dict[str, torch.Tensor]:
+        # (batch_size, input_sequence_length, encoder_output_dim)
+        embedded_input = self._source_embedder(source_tokens)
+        encoder_outputs = self._encoder(embedded_input, source_mask)
+        final_encoder_output = encoder_outputs[:, -1]  # (batch_size, encoder_output_dim)
+        encoded_dict = {"encoder_outputs": encoder_outputs, "final_encoder_output": final_encoder_output}
+        return encoded_dict
+
+    def _decode_step(self, input_choices: torch.LongTensor,
+                           decoder_hidden: torch.Tensor,
+                           decoder_context: torch.Tensor,
+                           encoder_outputs: torch.Tensor,
+                           source_mask: torch.LongTensor) -> Dict[str, torch.Tensor]:
+
+        decoder_input = self._prepare_decode_step_input(input_choices, decoder_hidden,
+                                                        encoder_outputs, source_mask)
+
+        decoder_hidden, decoder_context = self._decoder_cell(decoder_input,
+                                                             (decoder_hidden, decoder_context))
+        # (batch_size, num_classes)
+        output_projections = self._output_projection_layer(decoder_hidden)
+
+        class_probabilities = F.softmax(output_projections, dim=-1)
+        _, predicted_classes = torch.max(class_probabilities, 1)
+
+        decoded_dict = {"output_projections": output_projections,
+                        "class_probabilities": class_probabilities,
+                        "predicted_classes": predicted_classes}
+        return decoded_dict
+
 
     def _prepare_decode_step_input(self,
                                    input_indices: torch.LongTensor,
