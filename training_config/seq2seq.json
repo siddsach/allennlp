@@ -20,6 +20,7 @@
     },
     "max_decoding_steps":100, 
     "scheduled_sampling_ratio":0.0
+    "adaptive_softmax_cutoff": [1000, 10000]
     },
   "iterator": {
     "type": "bucket",

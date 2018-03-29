@@ -10,7 +10,7 @@ import torch
 from torch.autograd import Variable
 
 from allennlp.common.checks import ConfigurationError
-from allennlp.modules.adasoft import AdaptiveSoftmax
+#from allennlp.modules.adasoft import AdaptiveSoftmax
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -391,11 +391,12 @@ def weighted_sum(matrix: torch.Tensor, attention: torch.Tensor) -> torch.Tensor:
     intermediate = attention.unsqueeze(-1).expand_as(matrix) * matrix
     return intermediate.sum(dim=-2)
 
-
 '''
+
 def sequence_cross_entropy_with_logits(logits: torch.FloatTensor,
                                        targets: torch.LongTensor,
                                        weights: torch.FloatTensor,
+                                       adasoft,
                                        batch_average: bool = True,
                                        label_smoothing: float = None) -> torch.FloatTensor:
     """
@@ -468,7 +469,7 @@ def sequence_cross_entropy_with_logits(logits: torch.FloatTensor,
 def sequence_cross_entropy_with_logits(logits: torch.FloatTensor,
                                                targets: torch.LongTensor,
                                                weights: torch.FloatTensor,
-                                               adasoft: AdaptiveSoftmax,
+                                               adasoft,
                                                batch_average: bool = True,
                                                label_smoothing: float = None) -> torch.FloatTensor:
     """

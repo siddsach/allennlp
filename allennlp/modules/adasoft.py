@@ -1,6 +1,6 @@
 from typing import List
 import torch
-from overrised import overrides
+from overrides import overrides
 
 from allennlp.common import Params
 from allennlp.nn.util import zeros_like
@@ -17,7 +17,7 @@ class AdaptiveSoftmax(torch.nn.Module):
     ----------
     input_size : ``int``, required
         Number of tokens to compute softmax over. Typically equal to vocabulary size
-    class_cutoff_sizes : ``List[int``, required
+    class_cutoff_sizes : ``List[int]``, required
         Number of tokens in each class
     """
 

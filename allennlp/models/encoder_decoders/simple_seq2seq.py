@@ -10,9 +10,7 @@ from torch.nn.modules.linear import Linear
 from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.data.dataset_readers.seq2seq import START_SYMBOL, END_SYMBOL
-print('here')
 from allennlp.modules import Attention, TextFieldEmbedder, Seq2SeqEncoder
-print('y u here')
 from allennlp.modules.adasoft import AdaptiveSoftmax
 from allennlp.modules.similarity_functions import SimilarityFunction
 from allennlp.modules.token_embedders import Embedding
@@ -315,6 +313,7 @@ class SimpleSeq2Seq(Model):
         else:
             attention_function = None
         scheduled_sampling_ratio = params.pop_float("scheduled_sampling_ratio", 0.0)
+        adaptive_softmax_cutoff = params.pop("adaptive_softmax_cutoff", None)
         params.assert_empty(cls.__name__)
         return cls(vocab,
                    source_embedder=source_embedder,
@@ -322,4 +321,5 @@ class SimpleSeq2Seq(Model):
                    max_decoding_steps=max_decoding_steps,
                    target_namespace=target_namespace,
                    attention_function=attention_function,
-                   scheduled_sampling_ratio=scheduled_sampling_ratio)
+                   scheduled_sampling_ratio=scheduled_sampling_ratio,
+                   adaptive_softmax_cutoff=adaptive_softmax_cutoff)
