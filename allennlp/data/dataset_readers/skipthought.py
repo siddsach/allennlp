@@ -1,4 +1,3 @@
-
 from typing import Dict
 import logging
 
@@ -6,8 +5,7 @@ from overrides import overrides
 
 from allennlp.common import Params
 from allennlp.data.dataset_readers.dataset_reader import DatasetReader
-from allennlp.data.dataset_readers.dataset_utils.sentence_splitter import SentSplitter
-from allennlp.data.dataset_readers.dataset_utils.skipthought import get_skipthought_triplets
+from allennlp.data.dataset_readers.dataset_utils.sentence_splitter import SentenceSplitter
 from allennlp.data.fields import TextField
 from allennlp.data.instance import Instance
 from allennlp.data.tokenizers import Token, Tokenizer, WordTokenizer
@@ -45,13 +43,13 @@ class SkipthoughtDatasetReader(DatasetReader):
     """
     def __init__(self,
                  tokenizer: Tokenizer = None,
-                 sent_splitter: SentSplitter = None,
+                 sentence_splitter: SentenceSplitter = None,
                  token_indexers: Dict[str, TokenIndexer] = None,
                  add_start_token: bool = True,
                  lazy: bool = False) -> None:
         super().__init__(lazy)
         self._tokenizer = tokenizer or WordTokenizer()
-        self._sent_splitter = sent_splitter
+        self._sentence_splitter = sentence_splitter
         self._token_indexers = token_indexers or {"tokens": SingleIdTokenIndexer()}
         self._add_start_token = add_start_token
 
@@ -60,9 +58,15 @@ class SkipthoughtDatasetReader(DatasetReader):
         with open(file_path, "r") as data_file:
             logger.info("Reading sentences from file at: %s", file_path)
             text = data_file.read()
-            skipthought_sentence_iterator = get_skipthought_triplets(self._sent_splitter, text)
-            for before, source, after in skipthought_sentence_iterator:
-                yield self.text_to_instance(before, source, after)
+            before = None
+            source = None
+            after = None
+            for i, sent in enumerate(self._sentence_splitter.split_sents(text)):
+                before = source
+                source = after
+                after = sent
+                if i > 2:
+                    yield self.text_to_instance(before, source, after)
 
     @overrides
     def text_to_instance(self, before_string: str, source_string: str, after_string: str) -> Instance:  # type: ignore
@@ -86,8 +90,8 @@ class SkipthoughtDatasetReader(DatasetReader):
     def from_params(cls, params: Params) -> 'SkipthoughtDatasetReader':
         tokenizer_type = params.pop('tokenizer', None)
         tokenizer = None if tokenizer_type is None else Tokenizer.from_params(tokenizer_type)
-        sent_splitter_type = params.pop('sent_splitter', None)
-        sent_splitter = None if sent_splitter_type is None else SentSplitter.from_params(sent_splitter_type)
+        sentence_splitter_type = params.pop('sentence_splitter', None)
+        sentence_splitter = None if sentence_splitter_type is None else SentenceSplitter.from_params(sentence_splitter_type)
         indexers_type = params.pop('token_indexers', None)
         add_start_token = params.pop_bool('add_start_token', True)
         if indexers_type is None:
@@ -96,4 +100,4 @@ class SkipthoughtDatasetReader(DatasetReader):
             token_indexers = TokenIndexer.dict_from_params(indexers_type)
         lazy = params.pop('lazy', False)
         params.assert_empty(cls.__name__)
-        return SkipthoughtDatasetReader(tokenizer, sent_splitter, token_indexers, add_start_token, lazy)
+        return SkipthoughtDatasetReader(tokenizer, sentence_splitter, token_indexers, add_start_token, lazy)
