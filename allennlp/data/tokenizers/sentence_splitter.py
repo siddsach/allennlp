@@ -34,8 +34,6 @@ class SentenceSplitter(Registrable):
         return cls.by_name(choice).from_params(params)
 
 
-
-
 @SentenceSplitter.register('nltk_sent')
 class NltkSentenceSplitter(SentenceSplitter):
     """
@@ -79,21 +77,22 @@ class SpacySentenceSplitter(SentenceSplitter):
     A ``SentenceSplitter`` that uses spaCy's tokenizer.
     """
 
-    def __init__(self, language: str = 'en_core_web_sm') -> None:
+    def __init__(self, language: str = 'en_core_web_sm', use_parse: bool = True) -> None:
 
-        #We only need the sent tokenization so we pass False to args
-        self.spacy = get_spacy_model(language, False, False, False)
+        if use_parse:
+            self.spacy = get_spacy_model(language, True, True, False)
+        else:
+            self.spacy = get_spacy_model(language, False, False, False)
+            self.spacy.add_pipe(self.spacy.create_pipe('sentencizer'))
 
-    @overrides
-    def batch_split_sents(self, texts: List[str]) -> List[List[Token]]:
-        return (doc.sents for doc in self.spacy.pipe(texts, n_threads=-1))
 
     @overrides
     def split_sents(self, text: str) -> List[Token]:
-        return [s for s in self.spacy(text).sents]
+        return [s.text for s in self.spacy(text).sents]
 
     @classmethod
     def from_params(cls, params: Params) -> 'SentenceSplitter':
         language = params.pop('language', 'en_core_web_sm')
+        use_parse = params.pop('use_parse', False)
         params.assert_empty(cls.__name__)
-        return cls(language)
+        return cls(language, use_parse)
